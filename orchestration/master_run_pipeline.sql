@@ -11,8 +11,8 @@ Script Purpose:
 
 Execution Order:
     1. Load Bronze Layer
-    2. Load Silver Layer (placeholder)
-    3. Run Data Quality Tests (placeholder)
+    2. Load Silver Layer
+    3. Run Data Quality Tests
     4. Load Gold Layer (placeholder)
 ===============================================================================
 */
@@ -40,30 +40,29 @@ BEGIN TRY
 
     EXEC bronze.load_bronze @RunID = @MasterRunID;
 
-    PRINT '✅ Bronze Layer Completed Successfully.';
+    PRINT ' Bronze Layer Completed Successfully.';
 
     -- =======================================================================
-    -- Step 3: Execute Silver Layer Transformation (To be added later)
+    -- Step 3: Execute Silver Layer Transformation
     -- =======================================================================
     PRINT '';
     PRINT '--> Executing Silver Layer...';
 
-    -- This line is commented out until the 'silver.load_silver' procedure is created and deployed.
-    -- EXEC silver.load_silver @RunID = @MasterRunID;
+    EXEC silver.load_silver @RunID = @MasterRunID;
 
-    PRINT '✅ Silver Layer Completed Successfully. (Placeholder)';
+    PRINT ' Silver Layer Completed Successfully.';
 
 
     -- =======================================================================
-    -- Step 4: Run Data Quality Tests (To be added later)
+    -- Step 4: Run Data Quality Tests (Now Active)
     -- =======================================================================
     PRINT '';
     PRINT '--> Running Data Quality Tests...';
 
-    -- This line is commented out until the test procedures in the 'tests' schema are implemented.
-    -- EXEC tests.run_all_tests @RunID = @MasterRunID;
+    -- This line is now active and calls the testing procedure we created.
+    EXEC tests.run_silver_layer_checks @RunID = @MasterRunID;
 
-    PRINT '✅ Data Quality Tests Passed. (Placeholder)';
+    PRINT 'Data Quality Tests Passed.';
 
 
     -- =======================================================================
@@ -72,7 +71,7 @@ BEGIN TRY
     DECLARE @EndTime DATETIME = GETDATE();
     PRINT '';
     PRINT '=================================================';
-    PRINT '🎉 PIPELINE COMPLETED SUCCESSFULLY!';
+    PRINT 'PIPELINE COMPLETED SUCCESSFULLY!';
     PRINT 'Total Duration: ' + CAST(DATEDIFF(SECOND, @StartTime, @EndTime) AS VARCHAR) + ' seconds.';
     PRINT '=================================================';
 
@@ -84,13 +83,13 @@ BEGIN CATCH
     DECLARE @FailTime DATETIME = GETDATE();
     PRINT '';
     PRINT '=================================================';
-    PRINT '❌ PIPELINE FAILED!';
+    PRINT ' PIPELINE FAILED!';
     PRINT 'Error occurred at: ' + CONVERT(VARCHAR, @FailTime, 120);
     PRINT 'Total Duration before failure: ' + CAST(DATEDIFF(SECOND, @StartTime, @FailTime) AS VARCHAR) + ' seconds.';
     PRINT 'Check the dbo.etl_log table with RunID: ' + CAST(@MasterRunID AS VARCHAR(36)) + ' for details.';
     PRINT '=================================================';
 
-    -- The error that caused the CATCH block to execute is automatically
-    -- propagated from the failed child procedure, stopping the pipeline.
+    -- The THROW command from the child procedure will automatically
+    -- propagate the error message here if you run this in SSMS.
 END CATCH;
 GO
