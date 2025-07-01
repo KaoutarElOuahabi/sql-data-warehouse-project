@@ -2,14 +2,22 @@
 ===============================================================================
 Project:    DataWarehouse
 Script:     proc_load_silver.sql
-Author:     [Your Name]
-Date:       2025-06-27
+Author:     kaoutar EL ouahabi
 ===============================================================================
 Script Purpose:
-    This stored procedure transforms data from the 'bronze' schema and loads
-    it into the 'silver' schema. It follows the orchestration and logging
-    patterns established in the Bronze layer, including data cleansing,
-    validation, and type conversion.
+    This stored procedure is the core of the transformation layer. It extracts
+    data from the 'bronze' schema, applies a series of robust data cleansing,
+    standardization, and validation rules, and loads the high-quality,
+    business-ready data into the 'silver' schema.
+
+Key Transformations & Best Practices:
+    - Deduplication of records using ROW_NUMBER().
+    - Derivation of new columns (e.g., cat_id from prd_key).
+    - Calculation of Slowly Changing Dimension (SCD) end dates using LEAD().
+    - Robust cleansing of text fields to remove hidden whitespace characters.
+    - Standardization of categorical data (e.g., country codes, gender).
+    - Safe data type conversion (e.g., NVARCHAR to DATE).
+    - Use of Common Table Expressions (CTEs) for clarity in complex logic.
 ===============================================================================
 */
 
@@ -17,21 +25,22 @@ USE DataWarehouse;
 GO
 
 CREATE OR ALTER PROCEDURE silver.load_silver
-    @RunID UNIQUEIDENTIFIER  -- Parameter for orchestration
+    @RunID UNIQUEIDENTIFIER  -- Input parameter from the orchestrator for unified logging.
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Procedure-level constants and variables
+    -- Procedure-level constants and variables for consistent logging.
     DECLARE @ProcedureName NVARCHAR(200) = 'silver.load_silver';
     DECLARE @OverallStartTime DATETIME = GETDATE();
 
-    -- Log the start of the entire procedure execution
+    -- Log the start of the entire procedure execution for high-level monitoring.
     INSERT INTO dbo.etl_log (run_id, layer, procedure_name, status, start_time, message)
     VALUES (@RunID, 'Silver', @ProcedureName, 'Running', @OverallStartTime, 'Silver layer transformation started.');
 
     BEGIN TRY
-        -- A temporary table is used to define the execution order of transformations.
+        -- A temporary table defines the execution order of transformations.
+        -- This is useful for managing dependencies between tables if they arise.
         CREATE TABLE #SilverTablesToProcess (table_name NVARCHAR(100), process_order INT);
 
         INSERT INTO #SilverTablesToProcess (table_name, process_order)
@@ -39,7 +48,7 @@ BEGIN
             ('crm_cust_info', 1), ('crm_prd_info', 2), ('crm_sales_details', 3),
             ('erp_cust_az12', 4), ('erp_loc_a101', 5), ('erp_px_cat_g1v2', 6);
 
-        -- Declare cursor and loop variables
+        -- Declare cursor and loop variables for dynamic processing.
         DECLARE @tableName NVARCHAR(100);
         DECLARE @loop_startTime DATETIME, @loop_endTime DATETIME;
         DECLARE @rowsLoaded INT;
@@ -54,14 +63,12 @@ BEGIN
         BEGIN
             SET @loop_startTime = GETDATE();
 
-            -- Log start of this specific table's transformation
+            -- Log the start of processing for each individual table.
             INSERT INTO dbo.etl_log (run_id, layer, schema_name, table_name, procedure_name, status, start_time, message)
             VALUES (@RunID, 'Silver', 'silver', @tableName, @ProcedureName, 'Running', @loop_startTime, 'Transforming table...');
 
             BEGIN TRY
-                -- The transformation logic for each table is encapsulated below.
-                -- Each block truncates the target table before inserting the transformed data.
-
+                -- Each block truncates the target table and inserts the fully transformed data.
                 IF @tableName = 'crm_cust_info'
                 BEGIN
                     TRUNCATE TABLE silver.crm_cust_info;
@@ -80,34 +87,68 @@ BEGIN
                 BEGIN
                     TRUNCATE TABLE silver.crm_sales_details;
                     INSERT INTO silver.crm_sales_details (sls_ord_num, sls_prd_key, sls_cust_id, sls_order_dt, sls_ship_dt, sls_due_dt, sls_sales, sls_quantity, sls_price)
-                    SELECT sls_ord_num, sls_prd_key, sls_cust_id, TRY_CONVERT(DATE, sls_order_dt), TRY_CONVERT(DATE, sls_ship_dt), TRY_CONVERT(DATE, sls_due_dt), ISNULL(sls_sales, sls_quantity * sls_price), sls_quantity, sls_price
+                    SELECT sls_ord_num, sls_prd_key, sls_cust_id, CASE WHEN sls_order_dt = '0' OR LEN(sls_order_dt) != 8 THEN NULL ELSE CAST(CAST(sls_order_dt AS VARCHAR(8)) AS DATE) END, CASE WHEN sls_ship_dt = '0' OR LEN(sls_ship_dt) != 8 THEN NULL ELSE CAST(CAST(sls_ship_dt AS VARCHAR(8)) AS DATE) END, CASE WHEN sls_due_dt = '0' OR LEN(sls_due_dt) != 8 THEN NULL ELSE CAST(CAST(sls_due_dt AS VARCHAR(8)) AS DATE) END, CASE WHEN sls_sales IS NULL OR sls_sales <= 0 OR sls_sales != sls_quantity * ABS(sls_price) THEN sls_quantity * ABS(sls_price) ELSE sls_sales END, sls_quantity, CASE WHEN sls_price IS NULL OR sls_price <= 0 THEN sls_sales / NULLIF(sls_quantity, 0) ELSE sls_price END
                     FROM bronze.crm_sales_details;
                 END
                 ELSE IF @tableName = 'erp_cust_az12'
                 BEGIN
                     TRUNCATE TABLE silver.erp_cust_az12;
+                    -- Using a CTE for robust cleansing of the 'gen' column.
+                    WITH CleansedData AS (
+                        SELECT
+                            cid, bdate,
+                            -- First, remove all common hidden characters, then trim spaces.
+                            TRIM(REPLACE(REPLACE(REPLACE(gen, CHAR(13), ''), CHAR(10), ''), CHAR(9), '')) AS CleanedGen
+                        FROM bronze.erp_cust_az12
+                    )
                     INSERT INTO silver.erp_cust_az12 (cid, bdate, gen)
-                    SELECT CASE WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid, 4, LEN(cid)) ELSE cid END, CASE WHEN bdate > GETDATE() THEN NULL ELSE bdate END, CASE WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female' WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male' ELSE 'n/a' END
-                    FROM bronze.erp_cust_az12;
+                    SELECT
+                        CASE WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid, 4, LEN(cid)) ELSE cid END,
+                        CASE WHEN bdate > GETDATE() OR bdate < '1924-01-01' THEN NULL ELSE bdate END,
+                        CASE
+                            WHEN UPPER(CleanedGen) IN ('F', 'FEMALE') THEN 'Female'
+                            WHEN UPPER(CleanedGen) IN ('M', 'MALE') THEN 'Male'
+                            ELSE 'n/a'
+                        END
+                    FROM CleansedData;
                 END
                 ELSE IF @tableName = 'erp_loc_a101'
                 BEGIN
                     TRUNCATE TABLE silver.erp_loc_a101;
+                    -- Using a CTE for robust cleansing and standardization of the country column.
+                    WITH CleansedData AS (
+                        SELECT
+                            REPLACE(cid, '-', '') AS cid,
+                            -- Create a fully cleaned version for all logic.
+                            TRIM(REPLACE(REPLACE(REPLACE(cntry, CHAR(13), ''), CHAR(10), ''), CHAR(9), '')) AS CleanedCountry
+                        FROM bronze.erp_loc_a101
+                    )
                     INSERT INTO silver.erp_loc_a101 (cid, cntry)
-                    SELECT REPLACE(cid, '-', ''), CASE WHEN TRIM(cntry) = 'DE' THEN 'Germany' WHEN TRIM(cntry) IN ('US', 'USA') THEN 'United States' WHEN TRIM(cntry) = '' OR cntry IS NULL THEN 'n/a' ELSE TRIM(cntry) END
-                    FROM bronze.erp_loc_a101;
+                    SELECT
+                        cid,
+                        CASE
+                            WHEN CleanedCountry IS NULL OR CleanedCountry = '' THEN 'n/a'
+                            WHEN UPPER(CleanedCountry) IN ('US', 'USA') THEN 'United States'
+                            WHEN UPPER(CleanedCountry) = 'DE' THEN 'Germany'
+                            ELSE CleanedCountry
+                        END AS FinalCountry
+                    FROM CleansedData;
                 END
                 ELSE IF @tableName = 'erp_px_cat_g1v2'
                 BEGIN
                     TRUNCATE TABLE silver.erp_px_cat_g1v2;
                     INSERT INTO silver.erp_px_cat_g1v2 (id, cat, subcat, maintenance)
-                    SELECT id, cat, subcat, maintenance FROM bronze.erp_px_cat_g1v2;
+                    SELECT
+                        id,
+                        TRIM(cat),
+                        TRIM(subcat),
+                        TRIM(REPLACE(REPLACE(REPLACE(maintenance, CHAR(13), ''), CHAR(10), ''), CHAR(9), ''))
+                    FROM bronze.erp_px_cat_g1v2;
                 END
 
                 SET @rowsLoaded = @@ROWCOUNT;
                 SET @loop_endTime = GETDATE();
 
-                -- Update the log entry for this table to 'Success'.
                 UPDATE dbo.etl_log SET status = 'Success', end_time = @loop_endTime, rows_loaded = @rowsLoaded, message = 'Successfully transformed ' + CAST(@rowsLoaded AS NVARCHAR) + ' rows.'
                 WHERE run_id = @RunID AND table_name = @tableName AND status = 'Running';
 
@@ -116,7 +157,7 @@ BEGIN
                 SET @loop_endTime = GETDATE();
                 UPDATE dbo.etl_log SET status = 'Failed', end_time = @loop_endTime, message = ERROR_MESSAGE()
                 WHERE run_id = @RunID AND table_name = @tableName AND status = 'Running';
-                THROW; -- CRITICAL: Ensures the "fail-fast" behavior.
+                THROW;
             END CATCH;
 
             FETCH NEXT FROM cur INTO @tableName;
@@ -125,13 +166,15 @@ BEGIN
         CLOSE cur; DEALLOCATE cur; DROP TABLE #SilverTablesToProcess;
 
         -- This section is reached only if all transformations in the loop succeed.
-        UPDATE dbo.etl_log SET status = 'Success', end_time = GETDATE(), message = 'Silver layer transformation completed successfully.'
+        UPDATE dbo.etl_log
+        SET status = 'Success', end_time = GETDATE(), message = 'Silver layer transformation completed successfully.'
         WHERE run_id = @RunID AND procedure_name = @ProcedureName AND status = 'Running';
 
     END TRY
     BEGIN CATCH
         -- This outer block catches the error from the inner block, ensuring the procedure fails.
-        UPDATE dbo.etl_log SET status = 'Failed', end_time = GETDATE(), message = 'Procedure failed. See inner error for details.'
+        UPDATE dbo.etl_log
+        SET status = 'Failed', end_time = GETDATE(), message = 'Procedure failed. See inner error for details.'
         WHERE run_id = @RunID AND procedure_name = @ProcedureName AND status = 'Running';
 
         -- Best practice: Clean up temporary objects in case of an error.

@@ -2,8 +2,7 @@
 ===============================================================================
 Project:    DataWarehouse
 Script:     proc_run_tests.sql
-Author:     [Your Name]
-Date:       2025-07-01
+Author:     kaoutar EL ouahabi
 ===============================================================================
 Script Purpose:
     This script creates the stored procedure responsible for running a
