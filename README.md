@@ -89,8 +89,7 @@ Execute the procedure scripts for each layer (e.g., `proc_load_bronze.sql`) to c
 
 ## 📊 Current Status & Next Steps
 
-- **Status**: Bronze & Silver Layers Complete. The data ingestion, transformation, and quality testing frameworks are fully functional.
-- **Next Step (En cours...)**: Build the Gold Layer
+- **Status**: Bronze & Silver & Gold Layers Complete.
 
 ---
 
